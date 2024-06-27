@@ -1,0 +1,77 @@
+name: Open Pull Requests Validation
+
+on:
+  pull_request:
+    branches:
+      - development
+    types: [opened]
+
+jobs:
+  pull_request_validation:
+    runs-on:
+      group: hp-gh-selfhosted-runner-group-1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Validate JIRA/Story Number and Link
+        id: validate_jira
+        run: |
+          jira_number=$(grep -oP '(?<=JIRA/Story Number: ).*' <<< "${{ github.event.pull_request.body }}")
+          jira_link=$(grep -oP '(?<=JIRA/Story Link: ).*' <<< "${{ github.event.pull_request.body }}")
+
+          if [ ! -z "$jira_number" ] && [ ! -z "$jira_link" ]; then
+            echo "Validating JIRA/Story details..."
+            # Example validation using curl and JIRA API
+            status=$(curl -s -u ${{ secrets.JIRA_USER }}:${{ secrets.JIRA_API_TOKEN }} -X GET "${{ secrets.JIRA_BASE_URL }}/rest/api/latest/issue/$jira_number" -o /dev/null -w "%{http_code}")
+            if [ $status -eq 200 ]; then
+              echo "JIRA/Story validation passed."
+              echo "::set-output name=status::success"
+            else
+              echo "Invalid JIRA/Story details."
+              echo "::set-output name=status::failure"
+              exit 1
+            fi
+          else
+            echo "JIRA/Story details not provided."
+            echo "::set-output name=status::failure"
+            exit 1
+          fi
+
+  update_pr_status:
+    needs: pull_request_validation
+    runs-on:
+      group: hp-gh-selfhosted-runner-group-1
+    steps:
+      - name: Update PR status
+        if: ${{ needs.pull_request_validation.outputs.status == 'success' }}
+        uses: actions/github-script@5.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.sha,
+              state: 'success',
+              target_url: '',
+              description: 'Valid JIRA/Story details provided.',
+              context: 'JIRA/Story Validation'
+            })
+
+      - name: Update PR status on failure
+        if: ${{ needs.pull_request_validation.outputs.status == 'failure' }}
+        uses: actions/github-script@5.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.sha,
+              state: 'failure',
+              target_url: '',
+              description: 'Invalid or missing JIRA/Story details.',
+              context: 'JIRA/Story Validation'
+            })
+            core.setFailed('Invalid or missing JIRA/Story details.')
